@@ -1,2 +1,2 @@
 PyQt6>=6.4.0
-
+cryptography>=3.4.8
