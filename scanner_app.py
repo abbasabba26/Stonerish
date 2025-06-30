@@ -8,12 +8,15 @@ from PyQt6.QtWidgets import (
     QCheckBox, QGroupBox, QHBoxLayout, QProgressBar
 )
 from PyQt6.QtCore import QThread, pyqtSignal
-from key_utils import decrypt_license
+from key_utils import decrypt_license, CryptoKeyDetector, detect_all_crypto_keys
 
 class PaymentScanner:
     """Enhanced payment information scanner with multiple detection patterns"""
     
     def __init__(self):
+        # Initialize crypto detector
+        self.crypto_detector = CryptoKeyDetector()
+        
         # Credit card patterns (major card types)
         self.card_patterns = {
             'Visa': r'\b4[0-9]{12}(?:[0-9]{3})?\b',
@@ -118,6 +121,31 @@ class PaymentScanner:
                         'original': match.group(),
                         'file': filename
                     })
+        
+        # Add crypto key detection
+        crypto_results = detect_all_crypto_keys(content, filename)
+        
+        # Process crypto detection results
+        for result in crypto_results['raw_results']:
+            results.append({
+                'type': f"{result['type']} - {result['subtype']}",
+                'subtype': result['subtype'],
+                'value': result['value'],
+                'original': result.get('full_value', result['value']),
+                'file': filename,
+                'context': result.get('context', '')
+            })
+        
+        # Process login pairs
+        for pair in crypto_results['login_pairs']:
+            results.append({
+                'type': 'Login Credentials',
+                'subtype': 'Username/Password Pair',
+                'value': f"User: {pair['login']} | Pass: {pair['password']} | Site: {pair['site']}",
+                'original': f"Login: {pair['login']}, Password: {pair['password']}, Site: {pair['site']}",
+                'file': filename,
+                'context': f"Associated with {pair['site']}"
+            })
         
         return results
 
@@ -260,25 +288,36 @@ class ScannerApp(QWidget):
 
     def run_scan(self):
         if not self.license_info:
-            # Trial mode - show enhanced sample results
+            # Trial mode - show enhanced sample results with crypto data
             sample_results = [
-                {'type': 'Credit Card', 'subtype': 'Visa', 'value': '4111****1111', 'file': 'sample.txt'},
-                {'type': 'Credit Card', 'subtype': 'MasterCard', 'value': '5555****4444', 'file': 'sample.txt'},
-                {'type': 'Expiration Date', 'subtype': 'Date', 'value': '12/25', 'file': 'sample.txt'},
-                {'type': 'Security Code', 'subtype': 'CVV/CVC', 'value': '123', 'file': 'sample.txt'},
-                {'type': 'Cardholder Name', 'subtype': 'Name', 'value': 'John Doe', 'file': 'sample.txt'},
-                {'type': 'Cardholder Name', 'subtype': 'Name', 'value': 'Jane Smith', 'file': 'sample.txt'}
+                {'type': 'Credit Card', 'subtype': 'Visa', 'value': '4111****1111', 'file': 'sample.txt', 'context': 'Payment form data'},
+                {'type': 'Credit Card', 'subtype': 'MasterCard', 'value': '5555****4444', 'file': 'sample.txt', 'context': 'Stored payment info'},
+                {'type': 'Expiration Date', 'subtype': 'Date', 'value': '12/25', 'file': 'sample.txt', 'context': 'Card expiry'},
+                {'type': 'Security Code', 'subtype': 'CVV/CVC', 'value': '123', 'file': 'sample.txt', 'context': 'Security code'},
+                {'type': 'Cardholder Name', 'subtype': 'Name', 'value': 'John Doe', 'file': 'sample.txt', 'context': 'Cardholder info'},
+                {'type': 'Bitcoin - Bitcoin Address (Legacy)', 'subtype': 'Bitcoin Address', 'value': '1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa', 'file': 'crypto.txt', 'context': 'Bitcoin wallet address'},
+                {'type': 'Ethereum - Ethereum Address', 'subtype': 'Ethereum Address', 'value': '0x742d35Cc6634C0532925a3b8D4C0d886E', 'file': 'crypto.txt', 'context': 'Ethereum wallet'},
+                {'type': 'API Key - GitHub Token', 'subtype': 'GitHub Token', 'value': 'ghp_****************************', 'file': 'config.txt', 'context': 'GitHub API access'},
+                {'type': 'Login Credentials', 'subtype': 'Username/Password Pair', 'value': 'User: admin@example.com | Pass: ******** | Site: example.com', 'file': 'credentials.txt', 'context': 'Login credentials'},
+                {'type': 'Seed Phrase - 12-word Seed Phrase', 'subtype': '12-word Seed Phrase', 'value': 'abandon ability able ... zebra zone', 'file': 'wallet.txt', 'context': 'Wallet recovery phrase'}
             ]
             self.display_results(sample_results)
             QMessageBox.information(self, "Trial Mode", 
-                "This is a trial preview showing sample payment data detection.\n\n"
+                "This is a trial preview showing sample sensitive data detection.\n\n"
                 "Full version can scan for:\n"
+                "💳 PAYMENT DATA:\n"
                 "• Credit card numbers (Visa, MasterCard, Amex, etc.)\n"
-                "• Cardholder names\n"
-                "• CVV/CVC security codes\n"
-                "• Expiration dates\n"
-                "• Multiple file formats\n\n"
-                "Purchase a license for full functionality.")
+                "• Cardholder names, CVV codes, expiration dates\n\n"
+                "🔑 CRYPTOCURRENCY:\n"
+                "• Bitcoin, Ethereum, and other crypto addresses\n"
+                "• Private keys and wallet seed phrases\n\n"
+                "🔐 CREDENTIALS & KEYS:\n"
+                "• API keys (GitHub, AWS, Stripe, etc.)\n"
+                "• SSH keys, SSL certificates\n"
+                "• Username/password pairs with site associations\n\n"
+                "📁 MULTIPLE FILE FORMATS:\n"
+                "• Text, JSON, CSV, Log files and more\n\n"
+                "Purchase a license for full functionality and unlimited scanning.")
             return
 
         folder = QFileDialog.getExistingDirectory(self, "Select Folder to Scan")
@@ -319,44 +358,114 @@ class ScannerApp(QWidget):
     def display_results(self, results):
         self.last_results = results
         if not results:
-            self.result_box.setText("No payment information found.")
+            self.result_box.setText("No sensitive information found.")
             return
 
-        # Group results by type
+        # Group results by main category
         grouped = {}
         for result in results:
             result_type = result['type']
-            if result_type not in grouped:
-                grouped[result_type] = []
-            grouped[result_type].append(result)
-
-        # Format output
-        output = []
-        output.append(f"PAYMENT INFORMATION SCAN RESULTS")
-        output.append(f"Found {len(results)} potential payment data items")
-        output.append("=" * 60)
-        
-        for result_type, items in grouped.items():
-            output.append(f"\n{result_type.upper()} ({len(items)} found):")
-            output.append("-" * 40)
+            # Create main categories
+            if any(crypto in result_type for crypto in ['Bitcoin', 'Ethereum', 'Cryptocurrency']):
+                main_type = '🔑 CRYPTOCURRENCY KEYS'
+            elif 'API Key' in result_type:
+                main_type = '🔐 API KEYS & TOKENS'
+            elif 'Cryptographic Key' in result_type:
+                main_type = '🛡️ CRYPTOGRAPHIC KEYS'
+            elif 'Seed Phrase' in result_type:
+                main_type = '🌱 WALLET SEED PHRASES'
+            elif 'Login Credentials' in result_type:
+                main_type = '👤 LOGIN CREDENTIALS'
+            elif 'Credit Card' in result_type:
+                main_type = '💳 PAYMENT CARDS'
+            elif result_type in ['Expiration Date', 'Security Code']:
+                main_type = '💳 PAYMENT CARDS'
+            elif result_type == 'Cardholder Name':
+                main_type = '💳 PAYMENT CARDS'
+            else:
+                main_type = '📄 OTHER SENSITIVE DATA'
             
-            for i, item in enumerate(items, 1):
-                output.append(f"  {i}. {item['subtype']}: {item['value']}")
-                output.append(f"     File: {os.path.basename(item['file'])}")
-                if len(items) > 3 and i == 3:  # Limit display in trial mode
-                    if not self.license_info:
-                        output.append(f"     ... and {len(items) - 3} more (license required)")
-                        break
-                output.append("")
+            if main_type not in grouped:
+                grouped[main_type] = []
+            grouped[main_type].append(result)
 
-        # Add security warning
-        output.append("\n" + "!" * 60)
-        output.append("SECURITY WARNING:")
-        output.append("Payment information detected! Ensure these files are:")
-        output.append("• Properly encrypted")
-        output.append("• Access-controlled")
-        output.append("• Compliant with PCI DSS standards")
-        output.append("!" * 60)
+        # Format output with enhanced grouping
+        output = []
+        output.append("🔍 ENHANCED SECURITY SCAN RESULTS")
+        output.append(f"Found {len(results)} sensitive data items across {len(grouped)} categories")
+        output.append("=" * 70)
+        
+        # Summary by category
+        output.append("\n📊 SUMMARY BY CATEGORY:")
+        for main_type, items in grouped.items():
+            output.append(f"  {main_type}: {len(items)} items")
+        output.append("\n" + "=" * 70)
+        
+        # Detailed results by category
+        for main_type, items in grouped.items():
+            output.append(f"\n{main_type} ({len(items)} found)")
+            output.append("─" * 50)
+            
+            # Group items by subtype within category
+            subtype_groups = {}
+            for item in items:
+                subtype = item.get('subtype', item['type'])
+                if subtype not in subtype_groups:
+                    subtype_groups[subtype] = []
+                subtype_groups[subtype].append(item)
+            
+            for subtype, subitems in subtype_groups.items():
+                if len(subtype_groups) > 1:
+                    output.append(f"\n  📋 {subtype} ({len(subitems)} found):")
+                
+                for i, item in enumerate(subitems, 1):
+                    if len(subtype_groups) > 1:
+                        prefix = "    "
+                    else:
+                        prefix = "  "
+                    
+                    output.append(f"{prefix}{i}. {item['value']}")
+                    output.append(f"{prefix}   📁 File: {os.path.basename(item['file'])}")
+                    
+                    # Add context if available
+                    if item.get('context'):
+                        context = item['context'][:100] + '...' if len(item['context']) > 100 else item['context']
+                        output.append(f"{prefix}   💬 Context: {context}")
+                    
+                    # Limit display in trial mode
+                    if len(subitems) > 3 and i == 3 and not self.license_info:
+                        output.append(f"{prefix}   ... and {len(subitems) - 3} more (license required)")
+                        break
+                    
+                    output.append("")
+
+        # Enhanced security warnings
+        output.append("\n" + "⚠️ " * 20)
+        output.append("🚨 CRITICAL SECURITY WARNINGS 🚨")
+        output.append("⚠️ " * 20)
+        output.append("\n🔴 SENSITIVE DATA DETECTED! Take immediate action:")
+        output.append("• 🔒 Encrypt files containing this data immediately")
+        output.append("• 🚫 Restrict access to authorized personnel only")
+        output.append("• 📋 Review and update security policies")
+        output.append("• 🗑️  Consider removing or securing detected credentials")
+        output.append("• 💰 Move crypto keys to secure hardware wallets")
+        output.append("• 🔄 Rotate compromised API keys and passwords")
+        output.append("• 📊 Conduct security audit of affected systems")
+        output.append("• 🏢 Ensure compliance with data protection regulations")
+        
+        if any('Login Credentials' in result['type'] for result in results):
+            output.append("\n🔐 LOGIN CREDENTIAL SECURITY:")
+            output.append("• Change passwords immediately if compromised")
+            output.append("• Enable two-factor authentication where possible")
+            output.append("• Use password managers for secure storage")
+        
+        if any(crypto in str(result) for result in results for crypto in ['Bitcoin', 'Ethereum', 'API Key']):
+            output.append("\n💰 CRYPTOCURRENCY & API SECURITY:")
+            output.append("• Transfer funds to secure wallets immediately")
+            output.append("• Revoke and regenerate exposed API keys")
+            output.append("• Monitor accounts for unauthorized access")
+        
+        output.append("\n" + "⚠️ " * 20)
 
         self.result_box.setText("\n".join(output))
 
@@ -365,4 +474,3 @@ if __name__ == "__main__":
     window = ScannerApp()
     window.show()
     sys.exit(app.exec())
-

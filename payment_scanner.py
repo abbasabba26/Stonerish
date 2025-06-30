@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout
                             QMessageBox, QTabWidget, QLineEdit, QComboBox)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal
 from PyQt6.QtGui import QFont, QIcon
+from key_utils import CryptoKeyDetector, detect_all_crypto_keys
 
 class ScannerThread(QThread):
     """Background thread for scanning operations"""
@@ -24,6 +25,7 @@ class ScannerThread(QThread):
         super().__init__()
         self.files_to_scan = files_to_scan
         self.scan_options = scan_options
+        self.crypto_detector = CryptoKeyDetector()
         
     def run(self):
         total_files = len(self.files_to_scan)
@@ -59,6 +61,10 @@ class ScannerThread(QThread):
             # Scan for phone numbers
             if self.scan_options.get('phones', True):
                 self.scan_phone_numbers(file_path, content)
+                
+            # Scan for crypto keys and credentials
+            if self.scan_options.get('crypto_keys', True):
+                self.scan_crypto_keys(file_path, content)
                 
         except Exception as e:
             print(f"Error reading file {file_path}: {e}")
@@ -128,6 +134,24 @@ class ScannerThread(QThread):
         for d in even_digits:
             checksum += sum(digits_of(d*2))
         return checksum % 10 == 0
+    
+    def scan_crypto_keys(self, file_path, content):
+        """Scan for cryptocurrency keys and credentials"""
+        try:
+            crypto_results = detect_all_crypto_keys(content, file_path)
+            
+            # Process raw results
+            for result in crypto_results['raw_results']:
+                result_type = f"{result['type']} - {result['subtype']}"
+                self.result_found.emit(file_path, result_type, result['value'])
+            
+            # Process login pairs
+            for pair in crypto_results['login_pairs']:
+                login_info = f"Login: {pair['login']} | Password: {pair['password']} | Site: {pair['site']}"
+                self.result_found.emit(file_path, "Login Pair", login_info)
+                
+        except Exception as e:
+            print(f"Error scanning crypto keys in {file_path}: {e}")
     
     def is_common_false_positive(self, name):
         """Filter out common false positives for names"""
@@ -215,17 +239,20 @@ class PaymentScannerApp(QMainWindow):
         self.scan_names = QCheckBox("Names")
         self.scan_emails = QCheckBox("Email Addresses")
         self.scan_phones = QCheckBox("Phone Numbers")
+        self.scan_crypto_keys = QCheckBox("Crypto Keys & Credentials")
         
         # Set default selections
         self.scan_credit_cards.setChecked(True)
         self.scan_names.setChecked(True)
         self.scan_emails.setChecked(True)
         self.scan_phones.setChecked(True)
+        self.scan_crypto_keys.setChecked(True)
         
         options_layout.addWidget(self.scan_credit_cards)
         options_layout.addWidget(self.scan_names)
         options_layout.addWidget(self.scan_emails)
         options_layout.addWidget(self.scan_phones)
+        options_layout.addWidget(self.scan_crypto_keys)
         options_layout.addStretch()
         
         layout.addWidget(options_group)
@@ -357,7 +384,8 @@ class PaymentScannerApp(QMainWindow):
             'credit_cards': self.scan_credit_cards.isChecked(),
             'names': self.scan_names.isChecked(),
             'emails': self.scan_emails.isChecked(),
-            'phones': self.scan_phones.isChecked()
+            'phones': self.scan_phones.isChecked(),
+            'crypto_keys': self.scan_crypto_keys.isChecked()
         }
         
         # Clear previous results
@@ -390,8 +418,18 @@ class PaymentScannerApp(QMainWindow):
         }
         self.scan_results.append(result)
         
-        # Update results display
-        result_text = f"[{info_type}] {content} (in {os.path.basename(file_path)})\n"
+        # Update results display with better formatting
+        if 'Login Pair' in info_type:
+            result_text = f"🔐 [{info_type}] {content} (in {os.path.basename(file_path)})\n"
+        elif any(crypto_type in info_type for crypto_type in ['Bitcoin', 'Ethereum', 'Cryptocurrency', 'API Key', 'Seed Phrase']):
+            result_text = f"🔑 [{info_type}] {content} (in {os.path.basename(file_path)})\n"
+        elif 'Cryptographic Key' in info_type:
+            result_text = f"🛡️ [{info_type}] {content} (in {os.path.basename(file_path)})\n"
+        elif 'Credit Card' in info_type:
+            result_text = f"💳 [{info_type}] {content} (in {os.path.basename(file_path)})\n"
+        else:
+            result_text = f"📄 [{info_type}] {content} (in {os.path.basename(file_path)})\n"
+        
         self.results_text.append(result_text)
         
     def scan_finished(self):
@@ -427,14 +465,46 @@ class PaymentScannerApp(QMainWindow):
         if file_path:
             try:
                 with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write("Payment Information Scanner Results\n")
-                    f.write("=" * 50 + "\n\n")
+                    f.write("Enhanced Payment & Crypto Information Scanner Results\n")
+                    f.write("=" * 60 + "\n\n")
                     
+                    # Group results by type for better organization
+                    grouped_results = {}
                     for result in self.scan_results:
-                        f.write(f"Type: {result['type']}\n")
-                        f.write(f"Content: {result['content']}\n")
-                        f.write(f"File: {result['file']}\n")
-                        f.write("-" * 30 + "\n")
+                        result_type = result['type']
+                        if result_type not in grouped_results:
+                            grouped_results[result_type] = []
+                        grouped_results[result_type].append(result)
+                    
+                    # Write summary
+                    f.write(f"SCAN SUMMARY\n")
+                    f.write(f"Total items found: {len(self.scan_results)}\n")
+                    for result_type, items in grouped_results.items():
+                        f.write(f"  {result_type}: {len(items)} items\n")
+                    f.write("\n" + "=" * 60 + "\n\n")
+                    
+                    # Write detailed results grouped by type
+                    for result_type, items in grouped_results.items():
+                        f.write(f"{result_type.upper()} ({len(items)} found)\n")
+                        f.write("-" * 40 + "\n")
+                        
+                        for i, result in enumerate(items, 1):
+                            f.write(f"{i}. Content: {result['content']}\n")
+                            f.write(f"   File: {result['file']}\n")
+                            f.write(f"   Type: {result['type']}\n")
+                            f.write("\n")
+                        
+                        f.write("\n")
+                    
+                    # Add security warnings
+                    f.write("SECURITY WARNINGS\n")
+                    f.write("=" * 60 + "\n")
+                    f.write("⚠️  Sensitive information detected! Please ensure:\n")
+                    f.write("• Files containing this data are properly encrypted\n")
+                    f.write("• Access is restricted to authorized personnel only\n")
+                    f.write("• Data is handled according to security policies\n")
+                    f.write("• Consider removing or securing detected credentials\n")
+                    f.write("• Crypto keys should be stored in secure wallets\n")
                         
                 QMessageBox.information(self, "Export Complete", f"Results exported to {file_path}")
                 
@@ -459,4 +529,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
