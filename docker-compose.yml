@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  scanner:
+    build: .
+    container_name: credential_scanner
+    volumes:
+      - ./data:/app/data
+      - ./results:/app/results
+      - ./temp:/app/temp
+    environment:
+      - DISPLAY=${DISPLAY:-:0}
+      - SCANNER_LOG_LEVEL=INFO
+      - SCANNER_EXPORT_DIR=/app/results
+      - SCANNER_TEMP_DIR=/app/temp
+    network_mode: host
+    privileged: true  # Required for network capture
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    
+    # For GUI support on Linux
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix:rw
+      - ./data:/app/data
+      - ./results:/app/results
+      - ./temp:/app/temp
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python", "-c", "import sys; sys.exit(0)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Optional: Web interface service (for future web deployment)
+  web:
+    build: .
+    container_name: scanner_web
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/app/data
+      - ./results:/app/results
+    environment:
+      - FLASK_ENV=production
+      - SCANNER_EXPORT_DIR=/app/results
+    command: ["python", "web_app.py"]
+    depends_on:
+      - scanner
+    restart: unless-stopped
+    profiles:
+      - web  # Only start with --profile web
+
+volumes:
+  scanner_data:
+  scanner_results:
+  scanner_temp:
